@@ -113,18 +113,21 @@ const handleResponse = async (response) => {
 }
 
 // 登录API
-export const loginAPI = async (username, password) => {
+export const loginAPI = async (username, password, captchaToken = null) => {
   try {
-    // 加密密码
-    const encryptedPassword = encryptPassword(password)
+    const requestData = {
+      username,
+      password: encryptPassword(password)
+    }
     
-    // 真实API调用（生产环境使用）
+    // 如果有验证码token，则添加到请求中
+    if (captchaToken) {
+      requestData.hcaptcha_token = captchaToken
+    }
+    
     const response = await createRequest(API_CONFIG.ENDPOINTS.LOGIN, {
       method: 'POST',
-      body: JSON.stringify({
-        username,
-        password: encryptedPassword  // 发送加密后的密码
-      })
+      body: JSON.stringify(requestData)
     })
     
     const data = await handleResponse(response)

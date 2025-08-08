@@ -27,17 +27,20 @@
           />
         </div>
         
+
+        
         <div v-if="errorMessage" class="error-message">
           {{ errorMessage }}
         </div>
         
-        <button type="submit" class="login-button" :disabled="loading">
-          {{ loading ? '登录中...' : '登录' }}
+        <button 
+          type="submit" 
+          class="login-button" 
+          :disabled="loading"
+        >
+          <span v-if="loading">登录中...</span>
+          <span v-else>登录</span>
         </button>
-        
-        <div class="divider">
-          <span>或者</span>
-        </div>
         
         <button type="button" class="github-login-button" @click="handleGithubLogin" :disabled="loading">
           <svg class="github-icon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -52,12 +55,75 @@
         </div>
       </form>
     </div>
+    
+    <!-- hCaptcha 验证弹框 -->
+    <div v-if="showCaptchaModal" class="captcha-modal-overlay" @click="closeCaptchaModal">
+      <div class="captcha-modal" @click.stop>
+        <div class="captcha-modal-header">
+          <h3 class="captcha-modal-title">
+            <svg class="security-icon" width="24" height="24" viewBox="0 0 24 24" fill="none">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            安全验证
+          </h3>
+          <button type="button" class="captcha-modal-close" @click="closeCaptchaModal">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+        
+        <div class="captcha-modal-body">
+          <p class="captcha-modal-desc">为了您的账户安全，请完成以下验证：</p>
+          
+          <div class="captcha-container">
+            <vue-hcaptcha
+              ref="hcaptcha"
+              :sitekey="hcaptchaSiteKey"
+              size="normal"
+              theme="light"
+              @verify="onCaptchaVerify"
+              @expired="onCaptchaExpired"
+              @error="onCaptchaError"
+              @reset="onCaptchaReset"
+            />
+          </div>
+          
+          <div v-if="captchaError" class="captcha-modal-error">
+            <svg class="error-icon" width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+              <line x1="15" y1="9" x2="9" y2="15" stroke="currentColor" stroke-width="2"/>
+              <line x1="9" y1="9" x2="15" y2="15" stroke="currentColor" stroke-width="2"/>
+            </svg>
+            {{ captchaError }}
+          </div>
+          
+          <div v-if="isCaptchaVerified" class="captcha-success">
+            <svg class="success-icon" width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+            </svg>
+            验证成功！正在登录...
+          </div>
+        </div>
+        
+        <div class="captcha-modal-footer">
+          <button type="button" class="captcha-cancel-btn" @click="closeCaptchaModal" :disabled="loading">
+            取消
+          </button>
+          <button type="button" class="captcha-retry-btn" @click="resetCaptcha" :disabled="loading || isCaptchaVerified">
+            重新验证
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import VueHcaptcha from '@hcaptcha/vue3-hcaptcha'
 import { loginAPI, initiateGithubOAuth } from '../api/auth.js'
 
 const router = useRouter()
@@ -72,36 +138,123 @@ const loginForm = ref({
 const loading = ref(false)
 const errorMessage = ref('')
 
+// hCaptcha 相关状态
+const hcaptchaSiteKey = import.meta.env.VITE_HCAPTCHA_SITE_KEY
+const isCaptchaVerified = ref(false)
+const captchaToken = ref('')
+const captchaError = ref('')
+const hcaptcha = ref(null)
+const showCaptchaModal = ref(false)
+
 // 页面加载时检查是否有用户名参数
 onMounted(() => {
   if (route.query.username) {
     loginForm.value.username = route.query.username
   }
+  
+  // 检查hCaptcha配置
+  if (!hcaptchaSiteKey) {
+    console.warn('hCaptcha Site Key 未配置，请在环境变量中设置 VITE_HCAPTCHA_SITE_KEY')
+    captchaError.value = '验证码配置错误，请联系管理员'
+  }
 })
+
+// hCaptcha 事件处理
+const onCaptchaVerify = (token) => {
+  console.log('hCaptcha验证成功:', token.substring(0, 20) + '...')
+  isCaptchaVerified.value = true
+  captchaToken.value = token
+  captchaError.value = ''
+  errorMessage.value = ''
+  
+  // 验证成功后延迟关闭弹框并继续登录
+  setTimeout(async () => {
+    showCaptchaModal.value = false
+    await proceedWithLogin()
+  }, 1500)
+}
+
+const onCaptchaExpired = () => {
+  console.log('hCaptcha验证已过期')
+  isCaptchaVerified.value = false
+  captchaToken.value = ''
+  captchaError.value = '验证已过期，请重新验证'
+}
+
+const onCaptchaError = (error) => {
+  console.error('hCaptcha验证错误:', error)
+  isCaptchaVerified.value = false
+  captchaToken.value = ''
+  captchaError.value = '验证失败，请重试'
+}
+
+const onCaptchaReset = () => {
+  console.log('hCaptcha已重置')
+  isCaptchaVerified.value = false
+  captchaToken.value = ''
+  captchaError.value = ''
+}
+
+// 重置验证码
+const resetCaptcha = () => {
+  if (hcaptcha.value) {
+    hcaptcha.value.reset()
+  }
+}
+
+// 关闭验证弹框
+const closeCaptchaModal = () => {
+  showCaptchaModal.value = false
+  resetCaptcha()
+  loading.value = false
+}
+
+// 执行实际的登录逻辑
+const proceedWithLogin = async () => {
+  try {
+    loading.value = true
+    
+    // 调用登录API，传入验证码token
+    const response = await loginAPI(
+      loginForm.value.username, 
+      loginForm.value.password,
+      captchaToken.value
+    )
+    
+    // 保存JWT token
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('userToken', response.token)
+    }
+    
+    // 跳转到成功页面
+    router.push('/success')
+  } catch (error) {
+    console.error('登录失败:', error)
+    errorMessage.value = error.message
+    
+    // 登录失败后重置验证码状态
+    isCaptchaVerified.value = false
+    captchaToken.value = ''
+  } finally {
+    loading.value = false
+  }
+}
 
 // 处理登录
 const handleLogin = async () => {
+  // 验证表单数据
   if (!loginForm.value.username || !loginForm.value.password) {
     errorMessage.value = '请输入用户名和密码'
     return
   }
   
-  loading.value = true
+  // 清除之前的错误信息
   errorMessage.value = ''
+  captchaError.value = ''
   
-  try {
-    const response = await loginAPI(loginForm.value.username, loginForm.value.password)
-    
-    // 只保存JWT token到localStorage
-    localStorage.setItem('userToken', response.token)
-    
-    // 跳转到成功页面
-    router.push('/success')
-  } catch (error) {
-    errorMessage.value = error.message
-  } finally {
-    loading.value = false
-  }
+  // 显示验证弹框
+  showCaptchaModal.value = true
+  loading.value = true
 }
 
 // 处理GitHub登录
@@ -110,12 +263,10 @@ const handleGithubLogin = async () => {
     loading.value = true
     errorMessage.value = ''
     
-    // 发起GitHub OAuth2授权
     await initiateGithubOAuth()
   } catch (error) {
     console.error('GitHub登录错误:', error)
     
-    // 特殊处理CORS错误
     if (error.message.includes('CORS') || 
         error.message.includes('cross-origin') || 
         error.message.includes('strict-origin-when-cross-origin')) {
@@ -592,6 +743,259 @@ const handleGithubLogin = async () => {
   
   .login-form {
     gap: 1rem;
+  }
+}
+
+/* hCaptcha 弹框样式 */
+.captcha-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  padding: 1rem;
+  animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.captcha-modal {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 
+    0 20px 60px rgba(0, 0, 0, 0.3),
+    0 8px 20px rgba(0, 0, 0, 0.15);
+  width: 100%;
+  max-width: 480px;
+  max-height: 90vh;
+  overflow: hidden;
+  animation: slideIn 0.3s ease-out;
+  position: relative;
+}
+
+@keyframes slideIn {
+  from {
+    transform: scale(0.9) translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+  }
+}
+
+.captcha-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.5rem 2rem;
+  border-bottom: 1px solid #e1e8ed;
+  background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
+}
+
+.captcha-modal-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #333;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.security-icon {
+  color: #667eea;
+  flex-shrink: 0;
+}
+
+.captcha-modal-close {
+  background: none;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  padding: 0.5rem;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.captcha-modal-close:hover {
+  background: #f3f4f6;
+  color: #333;
+}
+
+.captcha-modal-body {
+  padding: 2rem;
+  text-align: center;
+}
+
+.captcha-modal-desc {
+  color: #666;
+  margin-bottom: 2rem;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.captcha-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 78px;
+  margin-bottom: 1.5rem;
+}
+
+.captcha-modal-error {
+  color: #e74c3c;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 1rem;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  animation: shake 0.5s ease-in-out;
+}
+
+.error-icon {
+  color: #dc2626;
+  flex-shrink: 0;
+}
+
+.captcha-success {
+  color: #059669;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  padding: 1rem;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  font-weight: 500;
+}
+
+.success-icon {
+  color: #16a34a;
+  flex-shrink: 0;
+}
+
+.captcha-modal-footer {
+  display: flex;
+  gap: 1rem;
+  padding: 1.5rem 2rem;
+  border-top: 1px solid #e1e8ed;
+  background: #f9fafb;
+}
+
+.captcha-cancel-btn,
+.captcha-retry-btn {
+  flex: 1;
+  padding: 0.75rem 1.5rem;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+}
+
+.captcha-cancel-btn {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+.captcha-cancel-btn:hover:not(:disabled) {
+  background: #e5e7eb;
+}
+
+.captcha-retry-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.captcha-retry-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.captcha-retry-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* 响应式优化 */
+@media (max-width: 480px) {
+  .captcha-modal {
+    margin: 1rem;
+    max-width: calc(100vw - 2rem);
+  }
+  
+  .captcha-modal-header {
+    padding: 1rem 1.5rem;
+  }
+  
+  .captcha-modal-body {
+    padding: 1.5rem;
+  }
+  
+  .captcha-modal-footer {
+    padding: 1rem 1.5rem;
+    flex-direction: column;
+  }
+  
+  .captcha-modal-title {
+    font-size: 1.1rem;
+  }
+  
+  /* hCaptcha 组件在小屏幕上的缩放 */
+  .captcha-container :deep(.h-captcha) {
+    transform: scale(0.85);
+    transform-origin: center;
+  }
+}
+
+@media (max-width: 360px) {
+  .captcha-container :deep(.h-captcha) {
+    transform: scale(0.75);
+  }
+}
+
+/* 高度受限时的布局调整 */
+@media (max-height: 600px) {
+  .captcha-modal {
+    max-height: 95vh;
+  }
+  
+  .captcha-modal-body {
+    padding: 1.5rem;
+  }
+  
+  .captcha-modal-desc {
+    margin-bottom: 1rem;
+  }
+  
+  .captcha-container {
+    min-height: 60px;
+    margin-bottom: 1rem;
   }
 }
 </style>
